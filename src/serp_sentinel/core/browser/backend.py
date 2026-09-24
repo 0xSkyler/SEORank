@@ -22,6 +22,8 @@ class SearchBackend(Protocol):
         hover_target: str | None = None,
     ) -> PageData: ...
 
+    async def close_all(self) -> None: ...
+
 
 class FakeBackend:
     def __init__(self, html: str):
@@ -36,8 +38,53 @@ class FakeBackend:
     ) -> PageData:
         return PageData(url, self.html, 200)
 
+    async def close_all(self) -> None:
+        return None
+
 
 class PlaywrightBackend:
+    """Reuse one persistent Chrome context and page per profile.
+
+    Reusing contexts avoids launching a new Chrome window for every Google page.
+    The backend remains read-only: it only navigates to Google Search URLs and
+    optionally hovers a matching result. It never clicks outbound results.
+    """
+
+    def __init__(self, *, headless: bool = True):
+        self.headless = headless
+        self._playwright: Any | None = None
+        self._contexts: dict[str, Any] = {}
+        self._pages: dict[str, Any] = {}
+
+    async def _ensure_started(self) -> Any:
+        if self._playwright is None:
+            from playwright.async_api import async_playwright
+
+            self._playwright = await async_playwright().start()
+        return self._playwright
+
+    async def _get_page(
+        self,
+        profile_dir: Path,
+        proxy: dict[str, str] | None,
+    ) -> Any:
+        key = str(profile_dir.resolve())
+        page = self._pages.get(key)
+        if page is not None and not page.is_closed():
+            return page
+
+        playwright = await self._ensure_started()
+        context = await playwright.chromium.launch_persistent_context(
+            str(profile_dir / "user_data"),
+            channel="chrome",
+            headless=self.headless,
+            proxy=cast(Any, proxy),
+        )
+        page = context.pages[0] if context.pages else await context.new_page()
+        self._contexts[key] = context
+        self._pages[key] = page
+        return page
+
     async def fetch(
         self,
         url: str,
@@ -46,33 +93,38 @@ class PlaywrightBackend:
         hover_target: str | None = None,
     ) -> PageData:
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-        from playwright.async_api import async_playwright
 
         if not url.startswith("https://www.google."):
             raise ValueError("navigation restricted to Google Search")
 
-        async with async_playwright() as playwright:
-            context = await playwright.chromium.launch_persistent_context(
-                str(profile_dir / "user_data"),
-                channel="chrome",
-                headless=False,
-                proxy=cast(Any, proxy),
-            )
-            page = context.pages[0] if context.pages else await context.new_page()
-            response = await page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=45000,
-            )
-            html = await page.content()
+        page = await self._get_page(profile_dir, proxy)
+        response = await page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=45000,
+        )
+        html = await page.content()
 
-            if hover_target:
-                try:
-                    await page.locator(f'a[href*="{hover_target}"]').first.hover(timeout=1500)
-                except PlaywrightTimeoutError:
-                    pass
+        if hover_target:
+            try:
+                await page.locator(
+                    f'a[href*="{hover_target}"]'
+                ).first.hover(timeout=1500)
+            except PlaywrightTimeoutError:
+                pass
 
-            final_url = page.url
-            status = response.status if response else 200
+        return PageData(
+            url=page.url,
+            html=html,
+            status=response.status if response else 200,
+        )
+
+    async def close_all(self) -> None:
+        for context in list(self._contexts.values()):
             await context.close()
-            return PageData(final_url, html, status)
+        self._contexts.clear()
+        self._pages.clear()
+
+        if self._playwright is not None:
+            await self._playwright.stop()
+            self._playwright = None
