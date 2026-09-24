@@ -3,8 +3,8 @@ from PyInstaller.utils.hooks import collect_data_files
 datas = collect_data_files("serp_sentinel")
 
 a = Analysis(
-    ["packaging/run_gui.py"],
-    pathex=["src"],
+    ["run_gui.py"],
+    pathex=["../src"],
     datas=datas,
     hiddenimports=["qasync", "pyqtgraph", "keyring.backends.Windows"],
     noarchive=False,
