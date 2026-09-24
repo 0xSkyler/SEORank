@@ -45,9 +45,9 @@ class FakeBackend:
 class PlaywrightBackend:
     """Reuse one persistent Chrome context and page per profile.
 
-    Reusing contexts avoids launching a new Chrome window for every Google page.
-    The backend remains read-only: it only navigates to Google Search URLs and
-    optionally hovers a matching result. It never clicks outbound results.
+    The backend only navigates to Google Search pages. It never clicks search
+    results or visits target websites. Visible mode supports user-driven CAPTCHA
+    solving without automating or bypassing the challenge.
     """
 
     def __init__(self, *, headless: bool = True):
@@ -55,6 +55,10 @@ class PlaywrightBackend:
         self._playwright: Any | None = None
         self._contexts: dict[str, Any] = {}
         self._pages: dict[str, Any] = {}
+
+    @staticmethod
+    def _profile_key(profile_dir: Path) -> str:
+        return str(profile_dir.resolve())
 
     async def _ensure_started(self) -> Any:
         if self._playwright is None:
@@ -68,7 +72,7 @@ class PlaywrightBackend:
         profile_dir: Path,
         proxy: dict[str, str] | None,
     ) -> Any:
-        key = str(profile_dir.resolve())
+        key = self._profile_key(profile_dir)
         page = self._pages.get(key)
         if page is not None and not page.is_closed():
             return page
@@ -118,6 +122,12 @@ class PlaywrightBackend:
             html=html,
             status=response.status if response else 200,
         )
+
+    async def bring_to_front(self, profile_dir: Path) -> None:
+        """Bring an already-open visible profile page forward for manual action."""
+        page = self._pages.get(self._profile_key(profile_dir))
+        if page is not None and not page.is_closed():
+            await page.bring_to_front()
 
     async def close_all(self) -> None:
         for context in list(self._contexts.values()):
