@@ -1,15 +1,97 @@
-name: Release
+name: Build and Release Windows App
+
 on:
   push:
-    tags: ['v*']
+    branches:
+      - feat/serp-sentinel-v0.1.0
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-v0.1.0
+  cancel-in-progress: true
+
 jobs:
-  build:
+  build-release:
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
-      - run: pip install -e .[build]
-      - run: pyinstaller packaging/serp_sentinel.spec
-      - uses: actions/upload-artifact@v4
-        with: {name: SerpSentinel-Windows, path: dist/SerpSentinel}
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,build]"
+
+      - name: Run offline tests
+        shell: pwsh
+        run: |
+          ruff check src tests
+          mypy src/serp_sentinel/core
+          pytest -q
+
+      - name: Build portable application
+        shell: pwsh
+        run: |
+          pyinstaller --clean --noconfirm packaging/serp_sentinel.spec
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Compress-Archive -Path dist\SerpSentinel\* -DestinationPath release\SerpSentinel-v0.1.0-portable.zip -Force
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            throw "Inno Setup compiler not found at $iscc"
+          }
+          & $iscc packaging\installer.iss
+
+      - name: Generate SHA256 checksums
+        shell: pwsh
+        run: |
+          Get-FileHash release\SerpSentinel-v0.1.0-portable.zip -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  SerpSentinel-v0.1.0-portable.zip" } |
+            Set-Content release\SHA256SUMS.txt
+          Get-FileHash release\SerpSentinel-v0.1.0-Setup.exe -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  SerpSentinel-v0.1.0-Setup.exe" } |
+            Add-Content release\SHA256SUMS.txt
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SerpSentinel-v0.1.0-Windows
+          path: release\*
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.0
+          target_commitish: ${{ github.sha }}
+          name: Serp Sentinel v0.1.0
+          body: |
+            Windows release of Serp Sentinel v0.1.0.
+
+            Download **SerpSentinel-v0.1.0-Setup.exe** for the normal installer,
+            or **SerpSentinel-v0.1.0-portable.zip** for the portable build.
+
+            This is the initial v0.1 implementation. It reads Google Search result pages,
+            records rank data, and does not click results or visit target sites.
+          draft: false
+          prerelease: false
+          files: |
+            release/SerpSentinel-v0.1.0-Setup.exe
+            release/SerpSentinel-v0.1.0-portable.zip
+            release/SHA256SUMS.txt
