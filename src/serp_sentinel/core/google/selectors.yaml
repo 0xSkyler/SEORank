@@ -1,0 +1,13 @@
+organic_containers:
+  - "div.MjjYud"
+  - "div.g"
+main_regions:
+  - "#search"
+  - "main"
+heading_links:
+  - "h3 a"
+  - "a:has(h3)"
+features:
+  people_also_ask: ["[data-q]", "div.related-question-pair"]
+  top_stories: ["g-section-with-header"]
+  images: ["g-scrolling-carousel"]
